@@ -55,6 +55,8 @@ regions. It is substantial added code, with a reported OM-1 II porting origin.
 The contributor reports working USB live view and recovery from a failed
 experiment. Those reports do not supply the failed image or a complete recovery
 trace. Its [code-space layout](../safety/CODE_SPACE.md) is independently analyzed.
+The [OM-3 functional report](om-3/FEATURE_PATCHES.md) accounts for all 35 edits
+and the separate, statically qualified experimental stacking eligibility bypass.
 
 ## E-M1 III 1.2 header defect
 
