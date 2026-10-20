@@ -4,6 +4,11 @@ Stock/hack pairs show which bytes changed and whether repacking preserves the
 container. They provide precedent for modification techniques, not a guarantee
 of recovery on another model or with arbitrary changes.
 
+For the distinct E-M1 II v3.6 changes and their static v3.7 correspondence, see
+[E-M1 II feature patches](em1-ii/FEATURE_PATCHES.md). That recording patch
+retains mode rejection; its stacking bypass does not establish retained
+missing-lens rejection. Do not import build-3001 behavior into those builds.
+
 ## Changes understood in native context
 
 | Model / internal build | Decoded main bytes changed | Whole encoded file bytes changed | Effect |
