@@ -4,6 +4,10 @@ Stock/hack pairs show which bytes changed and whether repacking preserves the
 container. They provide precedent for modification techniques, not a guarantee
 of recovery on another model or with arbitrary changes.
 
+For the complete E-M10 II v1.4 byte accounting and static caller trace, see
+[E-M10 II feature patches](em10-ii/FEATURE_PATCHES.md). Its early return
+also bypasses mode rejection; no native execution or camera testing is claimed.
+
 ## Changes understood in native context
 
 | Model / internal build | Decoded main bytes changed | Whole encoded file bytes changed | Effect |
