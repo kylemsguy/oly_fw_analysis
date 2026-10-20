@@ -9,6 +9,10 @@ For the distinct E-M1 II v3.6 changes and their static v3.7 correspondence, see
 retains mode rejection; its stacking bypass does not establish retained
 missing-lens rejection. Do not import build-3001 behavior into those builds.
 
+For the complete E-M10 II v1.4 byte accounting and static caller trace, see
+[E-M10 II feature patches](em10-ii/FEATURE_PATCHES.md). Its early return
+also bypasses mode rejection; no native execution or camera testing is claimed.
+
 ## Changes understood in native context
 
 | Model / internal build | Decoded main bytes changed | Whole encoded file bytes changed | Effect |
