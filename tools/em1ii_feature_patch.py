@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Reproduce the observed E-M1 II v3.6 edits or port them to pinned stock v3.7.
+"""Build selected E-M1 II features from pinned stock v3.6 or v3.7.
 
 Offline and experimental: static/manual ISA verification only, not native
 execution, updater acceptance, camera operation, or safety validation.
 """
 
 import argparse
+from collections.abc import Sequence
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -23,13 +24,24 @@ class Patch:
     after: bytes
 
 
-PATCHES = (
+HISTORICAL_PATCHES = (
     Patch("recording-time-limit", 0x3339B2,
           bytes.fromhex("c809ca0d2ccc06ca052c201c"),
           bytes.fromhex("c804ca0dfccc70707070cbcb")),
     Patch("focus-stacking-eligibility", 0x635A2A,
           bytes.fromhex("c904"), bytes.fromhex("cbcb")),
 )
+# Preserve the low-level patch_image() default independently of output catalogs.
+PATCHES = HISTORICAL_PATCHES
+TARGET_PATCHES = {
+    "36": HISTORICAL_PATCHES,
+    "37": (
+        *HISTORICAL_PATCHES,
+        # Retarget the dedicated lens-ID rejection to its existing success edge.
+        Patch("pro-capture-l-lens-check", 0x63482C,
+              bytes.fromhex("c904"), bytes.fromhex("c902")),
+    ),
+}
 PATCHED36_SHA256 = "79a01d8648f1bfbe282047ca16efc46e15c7a33c2024ff874d51bb0f0b446105"
 
 
@@ -185,29 +197,82 @@ def write_output(out: Path, output: bytes, manifest: dict) -> None:
         raise
 
 
-def build(stock36: Path, patched36: Path, stock37: Path | None,
-          target: str, out: Path) -> dict:
-    if target not in ("36", "37"):
+def feature_names(patches: tuple[Patch, ...]) -> tuple[str, ...]:
+    """Return canonical feature order, grouping all edits of each feature."""
+    return tuple(dict.fromkeys(patch.feature for patch in patches))
+
+
+def resolve_features(target: str, features: Sequence[str] | None = None
+                     ) -> tuple[tuple[str, ...], tuple[Patch, ...]]:
+    """Validate selection before I/O; catalog order, not request order, wins."""
+    if target not in TARGET_PATCHES:
         raise ValueError("target must be 36 or 37")
+    catalog = TARGET_PATCHES[target]
+    available = feature_names(catalog)
+    if features is None:
+        selected = available
+    else:
+        if isinstance(features, str) or not features:
+            raise ValueError("features must be a nonempty sequence of feature names")
+        known = {edit.feature for patches in TARGET_PATCHES.values() for edit in patches}
+        requested = set()
+        for name in features:
+            if not isinstance(name, str) or not name or name not in known:
+                raise ValueError(f"unknown feature: {name!r}")
+            if name in requested:
+                raise ValueError(f"duplicate feature: {name}")
+            if name not in available:
+                raise ValueError(f"feature {name!r} is unsupported for target {target}")
+            requested.add(name)
+        selected = tuple(name for name in available if name in requested)
+    patches = tuple(edit for name in selected for edit in catalog if edit.feature == name)
+    return selected, patches
+
+
+def build(stock36: Path, patched36: Path | None, stock37: Path | None,
+          target: str, out: Path, *, features: Sequence[str] | None = None) -> dict:
+    selected, patches = resolve_features(target, features)
     if target == "37" and stock37 is None:
         raise ValueError("--stock37 is required for target 37")
-    inputs = (stock36, patched36) + ((stock37,) if stock37 is not None else ())
+    inputs = tuple(path for path in (stock36, patched36, stock37) if path is not None)
     check_output_directory(out, inputs)
-    reference = patched36.read_bytes()
-    if sha256(reference) != PATCHED36_SHA256:
-        raise ValueError("historical patched36 reference SHA-256 mismatch")
-    reproduced, manifest = patch_image(stock36.read_bytes(), STOCK36, PATCHES)
-    if sha256(reproduced) != PATCHED36_SHA256 or reproduced != reference:
-        raise ValueError("v3.6 reproduction does not exactly match historical patched36")
-    output = reproduced
+    reference = None
+    if patched36 is not None:
+        reference = patched36.read_bytes()
+        if sha256(reference) != PATCHED36_SHA256:
+            raise ValueError("historical patched36 reference SHA-256 mismatch")
+    source36 = stock36.read_bytes()
+    reproduced, manifest = patch_image(source36, STOCK36, HISTORICAL_PATCHES)
+    reproduced_hash = sha256(reproduced)
+    if reproduced_hash != PATCHED36_SHA256:
+        raise ValueError("v3.6 reproduction SHA-256 does not match historical patched36")
+    if reference is not None and reproduced != reference:
+        raise ValueError("v3.6 reproduction does not exactly match historical patched36 reference")
     if target == "37":
-        output, manifest = patch_image(stock37.read_bytes(), STOCK37, PATCHES)
+        output, manifest = patch_image(stock37.read_bytes(), STOCK37, patches)
+    elif patches == HISTORICAL_PATCHES:
+        output = reproduced
+    else:
+        output, manifest = patch_image(source36, STOCK36, patches)
     manifest["historical_reproduction"] = {
         "stock36_path": str(stock36), "stock36_sha256": STOCK36.source_sha256,
-        "patched36_path": str(patched36), "patched36_sha256": PATCHED36_SHA256,
-        "reconstructed36_sha256": sha256(reproduced), "byte_identical": True,
+        "patched36_path": str(patched36) if patched36 is not None else None,
+        "patched36_sha256": PATCHED36_SHA256,
+        "reconstructed36_sha256": reproduced_hash, "pinned_hash_verified": True,
+        "reference_file_compared": reference is not None,
+        "byte_identical": True if reference is not None else None,
         "unrelated_source_patch_changes": [],
     }
+    manifest["selected_features"] = list(selected)
+    manifest["available_features"] = list(feature_names(TARGET_PATCHES[target]))
+    if "pro-capture-l-lens-check" in selected:
+        manifest["validation"]["semantic_basis"] += (
+            " Pro Capture L: pinned static dispatch and property1406 drive-rule proof"
+            " (L39 only; H38 unchanged), plus bounded instruction-scoped replay in"
+            " tools/em1ii_pro_capture_probe.py with modeled lookup/status helper returns;"
+            " not native execution. The stock null-lookup success path is unchanged;"
+            " this is not a missing-lens readiness gate."
+        )
     manifest["source_path"] = str(stock37 if target == "37" else stock36)
     manifest["output_filename"] = "E1259999.BIN"
     check_output_directory(out, inputs)
@@ -218,15 +283,19 @@ def build(stock36: Path, patched36: Path, stock37: Path | None,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stock36", type=Path, required=True)
-    parser.add_argument("--patched36", type=Path, required=True,
-                        help="required exact historical reference; verified before any output")
+    parser.add_argument("--patched36", type=Path,
+                        help="optional historical reference; hash and exact bytes verified if supplied")
     parser.add_argument("--stock37", type=Path)
     parser.add_argument("--target", choices=("36", "37"), default="37")
+    parser.add_argument("--features", nargs="+", action="extend", metavar="NAME",
+                        help="only these features; omission selects all verified features for the target")
     parser.add_argument("--out", type=Path, required=True, help="new output directory (must not exist)")
     args = parser.parse_args()
-    manifest = build(args.stock36, args.patched36, args.stock37, args.target, args.out)
+    manifest = build(args.stock36, args.patched36, args.stock37, args.target, args.out,
+                     features=args.features)
     print(json.dumps({"output": str(args.out / "E1259999.BIN"),
                       "sha256": manifest["output_sha256"],
+                      "selected_features": manifest["selected_features"],
                       "validation": "static/manual only; no native execution or camera testing"}))
 
 

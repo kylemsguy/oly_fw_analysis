@@ -1,24 +1,26 @@
-# E-M1 II v3.6 feature changes and static v3.7 port
+# E-M1 II feature patches and Pro Capture L lens eligibility
 
 ## Scope and validation status
 
-This report concerns **focus stacking** and the
-recording-limit-related routine in the supplied E-M1 II v3.6 modification.
-Both corresponding stock v3.7 sites are at the same decoded offsets as v3.6,
+This report covers **focus stacking** and the recording-limit-related routine
+in the supplied E-M1 II v3.6 modification, plus a separately traced **Pro Capture
+L lens-ID eligibility bypass for stock v3.7 only**. The two historical patch
+sites are at the same decoded offsets in v3.7 as v3.6,
 but the correspondence is established by multiple independent anchors and
 local control flow, **not by copying offsets**.
 
 Exact bytes, local instruction semantics, recording entry conventions, and
 local v3.7 mapping have high-confidence static evidence. This does not
-establish complete camera behavior. No usable MN103-capable objdump or native
-emulator was available; no additional tool installation/build/download was
-approved or performed. Instruction boundaries and control flow were checked
-manually against the existing authoritative ISA manual, not by executing
-firmware. There was no camera, updater, boot, physical-lens, thermal, storage,
+establish complete camera behavior. The original two-feature investigation
+had no usable MN103-capable objdump or native emulator and checked instruction
+boundaries manually against the authoritative ISA manual. The newer Pro Capture
+trace additionally uses GNU static disassembly and bounded instruction-scoped
+replay, described below; no native firmware execution was performed.
+There was no camera, updater, boot, physical-lens, thermal, storage,
 or long-recording test. Checksums and deterministic reconstruction are
 container-integrity evidence, not operational safety or unlimited recording.
 
-**Generated experimental artifact:**
+**Legacy two-feature experimental artifact:**
 `generated\em1ii_feature_port\output37\E1259999.BIN` (93,050,944 bytes).
 Its SHA-256 is
 `26198780bdacf2ec242b130757a141dfef1774c8cd0908cc283f5ac225bc691d`.
@@ -27,6 +29,191 @@ The decoded-main SHA-256 is
 The build manifest and independent final byte-verification results are beside
 the firmware as `manifest.json` and `independent-validation.json`. These
 identities establish the local artifact, not camera acceptance.
+
+**Current all-feature 3.7 artifact:**
+`generated/em1ii_feature_port/output37-all-features/E1259999.BIN`
+(93,050,944 bytes), containing recording-time-limit, Focus Stacking and
+Pro Capture L lens-ID edits. Its SHA-256 is
+`310e1c138a13a2fb88d1f46000c13bfde26b376489260212d78f55659c81b695`;
+the decoded-main SHA-256 is
+`2fcdf173f784b4afad279f08aa62c67ee32906ded3bf1828dc3b36d6146aeb21`.
+`manifest.json` and `independent-validation.json` are beside the firmware.
+This is experimental local output, not camera-tested firmware.
+
+## Selecting features
+
+The offline builder supports these features:
+
+| Feature | Target 3.6 | Target 3.7 |
+| --- | --- | --- |
+| `recording-time-limit` | Yes | Yes |
+| `focus-stacking-eligibility` | Yes | Yes |
+| `pro-capture-l-lens-check` | No | Yes |
+
+Omitting `--features` applies every verified feature for the selected target.
+An explicit list applies only the named features. Unknown, duplicate, empty or
+target-unsupported selections fail before firmware reads or output creation.
+Selection order does not change the firmware or canonical patch records;
+repeated `--features` flags accumulate rather than replace earlier selections.
+
+From the repository root, build the existing two-feature 3.7 combination:
+
+```bash
+python3 tools/em1ii_feature_patch.py \
+  --stock36 oly-firm/em1_ii-3.6/OLY_E_125_3600_0000_0000.BIN \
+  --stock37 oly-firm/em1_ii-3.7/E1259999.BIN \
+  --features recording-time-limit focus-stacking-eligibility \
+  --out generated/em1ii_feature_port/selected37
+```
+
+For stacking alone, replace the feature list with
+`--features focus-stacking-eligibility`. Each output directory must be new.
+The manifest and CLI summary identify the selected features; the manifest also
+lists all available features. Each subset starts from pinned pristine stock,
+not a previously patched image.
+
+Every build first reconstructs the **complete historical two-feature 3.6
+image**, regardless of the requested target or subset, and requires its pinned
+whole-image SHA-256. `--patched36` is optional: when supplied, its hash and exact
+bytes must additionally match that reconstruction. The manifest distinguishes
+the mandatory hash verification from an actual reference-file comparison.
+Omitting the reference does not disable historical verification.
+
+Build all three 3.7 features by omitting the selection option:
+
+```bash
+python3 tools/em1ii_feature_patch.py \
+  --stock36 oly-firm/em1_ii-3.6/OLY_E_125_3600_0000_0000.BIN \
+  --stock37 oly-firm/em1_ii-3.7/E1259999.BIN \
+  --out generated/em1ii_feature_port/rebuilt37-all-features
+```
+
+To apply only the Pro Capture L bypass, add
+`--features pro-capture-l-lens-check` and choose another new output directory.
+
+## Pro Capture L lens-ID bypass: stock 3.7
+
+The minimal edit changes **one payload byte**, within a two-byte instruction
+preimage. It is separate from the Focus Stacking patch:
+
+| Address space | Location | Original | Replacement |
+| --- | --- | --- | --- |
+| Decoded main instruction | `0x63482c` | `c9 04` | `c9 02` |
+| Runtime instruction | `0x6065584c` | `BNE +4` | `BNE +2` |
+| Actual changed decoded byte | `0x63482d` | `04` | `02` |
+| Actual changed raw container byte | `0x63484e` | `fb` | `fd` |
+
+The main trailer checksum must also be repaired. Do not hex-edit just the raw
+byte and assume the container remains valid; the builder repairs and verifies
+the checksum and exact full-file delta.
+
+### Dedicated predicate and dispatch
+
+The stock predicate at runtime `0x60655822..0x60655855` returns:
+
+```text
+object = lookup(0)
+if object is null:
+    return 1
+if uint16(status(0)) == 0:
+    return 0
+return uint16(object[1092] | (object[1093] << 8)) == 0
+```
+
+The tested word is the first two bytes of a four-byte lens ID. The edit changes
+only its rejection edge: stock `BNE +4` branches to `0x60655850`, preserving
+result zero; patched `BNE +2` targets the existing `MOV 1,D2` at `0x6065584e`.
+The zero-ID fallthrough already reaches that instruction. All original helper
+calls, ID reads and the status guard remain.
+
+The named `checkZeroLagLensCondition` consumers at `0x60d3eda6` and
+`0x60d3edef` query a service vtable at byte displacement 844. Its constructor at
+`0x60837c52` installs vtable `0x60afb5b4`, whose slot at `0x60afb900` points to
+`0x6083c6f8`. The resolved chain is:
+
+```text
+0x60d64c4c -> singleton 0x60837bf2 -> slot 844: 0x6083c6f8
+    -> 0x607d9107 -> API 0x60327e15 -> predicate 0x60655822
+```
+
+Those consumers normalize the result and conditionally update public property
+1406. A separate recomputed-property validator at `0x60863337` selects the same
+API when the requested property is 1406. Patching only cached availability or
+only a drive table would miss this additional consumer.
+
+### Why this is L-specific
+
+The stock derived drive selector, public key 2081, combines the named continuous
+take, electronic shutter and `MODE_ZERO_TIME_LAG` settings. Its dependency tuple
+maps **39 to Pro Capture L** and **38 to Pro Capture H**; the H tuple selects
+`MODE_CONTINUE_TAKE_HIGH_SPEED`, whereas L selects normal/low-speed continuous
+take. The rate descriptors at `0x604f374c` (public key 1157, L) and `0x604f3760`
+(1158, H) provide additional anchors, not the eligibility proof by themselves.
+
+The first-matching-rule registry at `0x6047aec0` contains 33 rules for selector
+2081. Only rows 22/23 and 30/31 depend on property 1406. Within each adjacent
+false/true pair, all other conditions are identical, and the sole translation
+difference is **39 -> 0 versus 39 -> 39**. All other entries, including H38,
+are identical. Other restriction rows remain unchanged and retain priority.
+This establishes the scope of the lens-ID eligibility change in those rules,
+not complete physical capture compatibility.
+
+The separate named `getZeroLagLensTroubleState` path at `0x609c2c65`, API
+`0x6032108d` and shared status routine `0x60229c52` are untouched. Globally
+forcing shared status or manufacturer predicates to succeed would remove
+unrelated checks and is not this patch.
+
+### Reproducible evidence and limitations
+
+[em1ii_pro_capture_probe.py](../../../tools/em1ii_pro_capture_probe.py) pins the
+decoded-main hash, the complete 51-byte predicate hash, concrete constructor
+and vtable bytes, selector tuples, and all 33 drive-rule records. With
+`--stock37`, it also validates the complete container and schema enum names.
+Supply a decoded main from the pinned stock container:
+
+```bash
+python3 tools/oly_container.py oly-firm/em1_ii-3.7/E1259999.BIN \
+  --expect-sha256 691a8a8e90af75b3848b70856a3a49ef24d72394cdfd2766fa37bdfe6325de70 \
+  --code-base 0x60021020 --out generated/em1ii_feature_port/pro-capture-stock37
+python3 tools/em1ii_pro_capture_probe.py \
+  --main generated/em1ii_feature_port/pro-capture-stock37/00_0100_40560020.decoded.bin \
+  --stock37 oly-firm/em1_ii-3.7/E1259999.BIN \
+  --out generated/em1ii_feature_port/pro-capture-audit.json
+python3 -B -m unittest discover -s tests -p 'test_em1ii_pro_capture_probe.py' -v
+```
+
+The probe replays 40 bounded combinations of null/present lookup, normalized
+helper status and zero/nonzero lens-ID words. Lookup and status responses are
+explicit fixtures. This is a small instruction-scoped replay, **not native
+MN103 execution**, a full ABI model or camera emulation. It verifies that only
+the nonzero-ID rejection after the retained status guard changes.
+
+The stock null-object path already returns 1 and is unchanged. Neither this
+predicate nor its bypass proves missing-lens rejection elsewhere. Vendor/model
+names for numeric lens IDs, autofocus, timing, capture scheduling, physical lens
+communication, bootability and updater acceptance have not been tested.
+
+Local detailed evidence is under
+`generated/em1ii_feature_port/pro_capture_trace37/FINAL-PROOF.json`, with
+`final-verification.json` and `dispatch-proof/`. This supersedes the preliminary
+blocked findings in that directory. Generated disassembly remains local.
+
+### Combined-output validation
+
+All 30 focused tests passed with `EM1II_ACTUAL_FIXTURES=1`, including the seven
+nonempty combinations of the three features and four predicate replay tests:
+
+```bash
+EM1II_ACTUAL_FIXTURES=1 python3 -B -m unittest discover -s tests -p 'test_em1ii_*.py' -v
+```
+
+The actual CLI default build was independently reread and checked against
+explicit edit bytes and a separately computed checksum delta, not just its
+manifest. Exactly **15 raw bytes** differ from stock: 11 encoded payload bytes
+and four main-trailer checksum bytes. The main checksum at raw `0x15ffffc`
+changes from `61f1cb05` to `4c9d8efe`. All five component checksums pass, the
+container reconstructs exactly, all non-main components and unchanged metadata
+are identical, and both original input hashes remain intact.
 
 ## Inputs and local evidence
 
@@ -353,7 +540,7 @@ target 37 also verifies exact historical v3.6 reproduction before writing.
 The reproduction command uses `rebuilt37` to avoid colliding with the
 delivered `output37` directory. Both produce the same firmware SHA-256 above.
 
-## Completed validation
+## Legacy two-feature validation
 
 The 15 focused patch-builder tests passed, including the optional real-image
 test enabled with `EM1II_ACTUAL_FIXTURES=1`; the nine existing container tests
